@@ -156,12 +156,34 @@ class DUPSystem:
 
         self.stage1_prompt = "Please extract core question, only the most comprehensive and detailed one!"
         self.stage2_prompt_template = (
-            "Note: Please extract the problem-solving information related to the core question "
-            "({core_question}), only extract the most useful information, list them one by one!"
+            "Extract only the problem-solving information for the core question:\n"
+            "CORE QUESTION: {core_question}\n\n"
+            "Return a concise bullet list with these headings:\n"
+            "• GIVEN QUANTITIES (value + unit as stated, or 'unitless')\n"
+            "• REQUIRED ANSWER UNIT (from the question; if not stated, infer the most natural unit and say 'INFERRED: <unit>')\n"
+            "• RELEVANT RELATIONSHIPS (equations/rates/proportions you will use)\n"
+            "• UNIT CONVERSIONS NEEDED (explicitly list any conversions, e.g., hours→minutes, feet→inches; if none, say 'none')\n"
+            "Only include information necessary to solve the problem.\n"
         )
-        self.stage3_prompt_template = """Hint: {problem_solving_info}
-{core_question}
-Please understand the Hint and question information, then solve the question step by step and show the answer."""
+        self.stage3_prompt_template = """You are solving a single quantitative word problem.
+        Follow this structure strictly:
+        1) VARIABLES: Define variables for the GIVEN QUANTITIES with their units.
+        2) PLAN: List the RELEVANT RELATIONSHIPS you will use.
+        3) UNIT PLAN: From "UNIT CONVERSIONS NEEDED", show each conversion explicitly (e.g., 1 hour = 60 minutes).
+        4) COMPUTE: Do step-by-step calculations. Keep units on every intermediate result.
+        5) FORMAT: Produce the final numeric value in the REQUIRED ANSWER UNIT identified earlier.
+        6) CHECK: Plug the final value (with units) back into the problem to verify consistency.
+        - If the CHECK fails or the unit is not the REQUIRED ANSWER UNIT, correct and recompute.
+
+        At the very end, output exactly one line in this format (no units on this line):
+        FINAL_ANSWER: <number>
+
+        Hint (from Stage 2):
+        {problem_solving_info}
+
+        Question:
+        {core_question}
+        """
         self.zero_shot_cot_prompt = "Let's think step by step."
         self.answer_extraction_prompt = "Please extract the final numerical answer from the above solution. Respond with only the number."
 
@@ -378,14 +400,102 @@ class GSM8KEvaluator:
         print(f"Improvement: {dup_accuracy - cot_accuracy:.2%}")
         print(f"Average processing time: {avg_processing_time:.2f} seconds")
 
+# ========= Helper: build examples from raw questions =========
+def build_examples_from_questions(
+    questions: List[str],
+    ground_truths: Optional[Dict[str, float]] = None
+) -> List[GSM8KExample]:
+    """
+    Create GSM8KExample objects from raw questions.
+    If ground_truths is provided (mapping question -> numeric answer),
+    we store it so correctness can be computed. Otherwise, correctness fields
+    will be based on 0.0 and effectively uninformative (you can still inspect outputs).
+    """
+    examples: List[GSM8KExample] = []
+    for q in questions:
+        gt = 0.0
+        if ground_truths is not None and q in ground_truths:
+            gt = float(ground_truths[q])
+        examples.append(GSM8KExample(
+            question=q,
+            answer="",                  # unknown/external
+            numerical_answer=gt         # used for correctness if provided
+        ))
+    return examples
+
+
+# ========= New: run evaluator on arbitrary example list =========
+def run_on_examples(
+    examples: List[GSM8KExample],
+    api_key: str,
+) -> List[DUPResult]:
+    dup_system = DUPSystem(api_key)
+    results: List[DUPResult] = []
+
+    for i, example in enumerate(examples, 1):
+        print(f"\nProcessing example {i}/{len(examples)}")
+        try:
+            result = dup_system.evaluate_single_example(example)
+            results.append(result)
+
+            # Live stats (only meaningful if ground truths present)
+            if all(ex.numerical_answer is not None for ex in examples):
+                dup_acc = sum(r.dup_correct for r in results) / len(results)
+                cot_acc = sum(r.zero_shot_cot_correct for r in results) / len(results)
+                print(f"Current DUP accuracy: {dup_acc:.2%}")
+                print(f"Current CoT accuracy: {cot_acc:.2%}")
+        except Exception as e:
+            print(f"Error processing example {i}: {e}")
+            continue
+
+    return results
+
 def main():
     """Main function to run the evaluation"""
+
+    # ================== SWITCHES ==================
+    USE_SELECTED_QUESTIONS = True  # set True to run only specific questions
+
+    # When using selected questions, put them here:
+    SELECTED_QUESTIONS = [
+        # Example:
+        # "Tracy used a piece of wire 4 feet long to support tomato plants in the garden. "
+        # "The wire was cut into pieces 6 inches long. How many pieces did she obtain?",
+        "Britany records 18 4-minute TikTok videos each week. She spends 2 hours a week writing amateur songs to sing on TikTok, and 15 minutes six days a week doing her makeup before filming herself for TikTok. How much time does Britany spend on TikTok in a month with four weeks?",
+        "A shoe store was having a weekend sale on a brand of popular tennis shoes. On Friday the store sold 14 pairs of tennis shoes. The next day they sold double that number of shoes. On the last day of the sale they sold one-half the amount that they did the day before, but six people returned their pairs because they didn't fit. How many tennis shoes were sold by the end of the sale?"
+    ]
+
+    # Optional: provide ground truths to compute correctness for the selected questions
+    # If omitted or missing for a question, correctness is not meaningful (but outputs are still produced).
+    SELECTED_GROUND_TRUTHS = {
+        # "Tracy used a piece of wire 4 feet long to support tomato plants in the garden. The wire was cut into pieces 6 inches long. How many pieces did she obtain?": 8.0,
+        SELECTED_QUESTIONS[0]: 1128,
+        SELECTED_QUESTIONS[1]:50
+    }
+    # ==============================================
+
     N_SAMPLES = 150
     SPLIT = "test"
 
     try:
+        api_key = os.getenv('MISTRAL_API_KEY')
+        if not api_key:
+            raise ValueError("MISTRAL_API_KEY not found in environment variables")
+
         evaluator = GSM8KEvaluator()
-        _ = evaluator.run_evaluation(n_samples=N_SAMPLES, split=SPLIT)
+
+        if USE_SELECTED_QUESTIONS:
+            print("Running on selected questions only...")
+            examples = build_examples_from_questions(
+                SELECTED_QUESTIONS,
+                ground_truths=SELECTED_GROUND_TRUTHS if SELECTED_GROUND_TRUTHS else None
+            )
+            results = run_on_examples(examples, api_key=api_key)
+            evaluator.results = results
+        else:
+            print(f"Running full evaluation with {N_SAMPLES} samples from '{SPLIT}'...")
+            _ = evaluator.run_evaluation(n_samples=N_SAMPLES, split=SPLIT)
+
         _ = evaluator.save_results_to_csv()
         evaluator.print_summary_statistics()
         print("\nEvaluation complete! Results saved to CSV.")
