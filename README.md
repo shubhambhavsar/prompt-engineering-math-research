@@ -13,7 +13,7 @@ This repository contains a modular research framework for systematically evaluat
 ### Research Questions
 
 - How do different prompting techniques affect mathematical reasoning performance in small LLMs?
-- Which strategies are most effective for resource-constrained models (1.5B-7B parameters)?
+- Which strategies are most effective for resource-constrained models (1.5B-3B parameters)?
 - What is the trade-off between accuracy, computational cost, and reliability?
 - How do retry mechanisms and self-consistency voting impact final performance?
 
@@ -558,9 +558,9 @@ I'm open to:
 - Joint experiments on related problems
 
 **Contact:**
-- **GitHub:** [@yourusername](https://github.com/yourusername)
-- **LinkedIn:** [Shubham Bhavsar](https://linkedin.com/in/yourprofile)
-- **Email:** your.email@example.com
+- **GitHub:** [@shubhambhavsar](https://github.com/shubhambhavsar)
+- **LinkedIn:** [Shubham Bhavsar](https://www.linkedin.com/in/shubham-bhavsar/)
+- **Email:** sbhavsar3798@gmail.com
 
 ---
 
